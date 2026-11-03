@@ -43,9 +43,21 @@ def load_image(source: ImageSource) -> np.ndarray:
     versions, but PIL's behaviour is explicit, so we always use PIL and make the
     result deterministic.
     """
+    if source is None:
+        raise ValueError("image source is missing")
     if isinstance(source, np.ndarray):
+        if source.size == 0:
+            raise ValueError("image array is empty")
+        if source.dtype != np.uint8:
+            raise ValueError("image array must use uint8 pixel values")
         if source.ndim == 2:
             return cv2.cvtColor(source, cv2.COLOR_GRAY2BGR)
+        if source.ndim != 3 or source.shape[2] not in (1, 3, 4):
+            raise ValueError("image array must be grayscale, BGR, or BGRA")
+        if source.shape[2] == 1:
+            return cv2.cvtColor(source, cv2.COLOR_GRAY2BGR)
+        if source.shape[2] == 4:
+            return cv2.cvtColor(source, cv2.COLOR_BGRA2BGR)
         return source.copy()
     if isinstance(source, Image.Image):
         pil = source
@@ -56,7 +68,10 @@ def load_image(source: ImageSource) -> np.ndarray:
     else:
         pil = Image.open(source)
     pil = ImageOps.exif_transpose(pil).convert("RGB")
-    return cv2.cvtColor(np.asarray(pil), cv2.COLOR_RGB2BGR)
+    image = np.asarray(pil)
+    if image.size == 0 or image.ndim != 3 or image.shape[2] != 3:
+        raise ValueError("decoded file does not contain a valid color image")
+    return cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
 
 def image_fingerprint(img: np.ndarray) -> str:

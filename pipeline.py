@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import sys
+import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
@@ -27,8 +28,9 @@ from image_processing import (Transform, bgr_to_rgb, crop_polygon, draw_polygon,
                               image_quality, limit_size, load_image, rotate_quarter_turns)
 from ocr_engine import (Candidate, Detection, Match, OCREngine, VerifyResult, extract_tokens, find_exact,
                         merge_detections, normalize_query, rank_candidates, verify_polygon)
-from seat_locator import SeatLocator, SeatResult
+from seat_locator import SeatLocator, SeatResult, find_room_headings
 
+logger = logging.getLogger(__name__)
 
 # ==========================================================================
 # Analysis of one photo (everything that does not depend on the query)
@@ -68,6 +70,7 @@ def _n_full(dets: Sequence[Detection]) -> int:
 def analyze(img_bgr: np.ndarray, engine: OCREngine, auto_rotate: bool = True, max_side: int = 3600) -> Analysis:
     """Run the one-time, query-independent work on a photo."""
     notes: List[str] = []
+    img_bgr = load_image(img_bgr)
     work, s = limit_size(img_bgr, max_side)
     T = Transform.scale(s)
     if s != 1.0:
@@ -86,20 +89,45 @@ def analyze(img_bgr: np.ndarray, engine: OCREngine, auto_rotate: bool = True, ma
             n, k, work, dets, Tr = best
             T = T.then(Tr)
             notes.append(f"Photo was rotated by {90 * k} degrees automatically (found {n} registration numbers).")
-    return Analysis(original=img_bgr, work=work, to_work=T, detections=dets, engine_name=engine.name,
-                    engine_note=engine.fallback_reason, quality=image_quality(img_bgr), notes=notes,
-                    fingerprint=image_fingerprint(img_bgr))
+    analysis = Analysis(original=img_bgr, work=work, to_work=T, detections=dets, engine_name=engine.name,
+                        engine_note=engine.fallback_reason, quality=image_quality(img_bgr), notes=notes,
+                        fingerprint=image_fingerprint(img_bgr))
+    quality = analysis.quality
+    if (quality["blur"] < 60 or quality["contrast"] < 35 or quality["brightness"] < 80
+            or quality["brightness"] > 215 or min(work.shape[:2]) < 900):
+        add_enhanced_pass(analysis, engine)
+    return analysis
 
 
 def add_enhanced_pass(analysis: Analysis, engine: OCREngine) -> None:
-    """Second OCR pass on a contrast-enhanced copy (SAME size => same coordinates)."""
+    """Compare a contrast-enhanced OCR pass and keep it only when its evidence improves."""
     if analysis.enhanced_done:
         return
     enh = enhance(analysis.work, "clahe+sharpen")
-    assert enh.shape == analysis.work.shape
-    analysis.add_detections(engine.run(enh, "enhanced"))
+    if enh.shape != analysis.work.shape:
+        raise ValueError("enhancement changed image dimensions; OCR coordinates would no longer align")
+    candidate = engine.run(enh, "enhanced")
     analysis.enhanced_done = True
-    analysis.notes.append("A second OCR pass on a contrast-enhanced copy was used.")
+    base_tokens = [t for t in extract_tokens(analysis.detections) if t.kind == "full"]
+    candidate_tokens = [t for t in extract_tokens(candidate) if t.kind == "full"]
+    base_rooms = len(find_room_headings(analysis.detections))
+    candidate_rooms = len(find_room_headings(candidate))
+    base_mean = float(np.mean([t.det.score for t in base_tokens])) if base_tokens else 0.0
+    candidate_mean = float(np.mean([t.det.score for t in candidate_tokens])) if candidate_tokens else 0.0
+    improved = (len(candidate_tokens) > len(base_tokens)
+                or candidate_rooms > base_rooms
+                or (len(candidate_tokens) == len(base_tokens) and candidate_rooms == base_rooms
+                    and candidate_mean >= base_mean + 0.02))
+    if improved:
+        analysis.add_detections(candidate)
+        analysis.notes.append(
+            "Contrast-enhanced OCR was retained after it improved roll-number or room-heading evidence."
+        )
+    else:
+        analysis.notes.append(
+            "Contrast-enhanced OCR was compared but did not improve roll-number or room-heading evidence; "
+            "the original OCR results were retained."
+        )
 
 
 # ==========================================================================
@@ -224,8 +252,12 @@ def all_numbers_table(analysis: Analysis) -> pd.DataFrame:
         s = analysis.locator.locate(t.det)
         rows.append(dict(reg_no=t.digits, letters_converted=t.substituted, ocr_score=round(t.det.score, 3),
                          room=s.room, column=s.column, row=s.row, seat_verified=s.verified,
-                         x=int(t.det.center[0]), y=int(t.det.center[1])))
-    return pd.DataFrame(rows).sort_values(["room", "row", "column"], na_position="last").reset_index(drop=True)
+                         x=int(t.det.center[0]), y=int(t.det.center[1]), warnings="; ".join(s.warnings)))
+    columns = ["reg_no", "letters_converted", "ocr_score", "room", "column", "row", "seat_verified",
+               "x", "y", "warnings"]
+    return (pd.DataFrame(rows, columns=columns)
+            .sort_values(["room", "row", "column"], na_position="last")
+            .reset_index(drop=True))
 
 
 # ==========================================================================

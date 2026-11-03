@@ -5,7 +5,7 @@ Upload **one or many** phone photos of university sitting charts, type one regis
 ```bash
 streamlit run app.py                                      # multi-photo app
 python multi_search.py "<registration-number>" a.jpg b.jpg c.jpg  # same search from the terminal
-python -m pytest tests/test_matching.py -q                 # pure matching tests
+python -m pytest -q                                       # full regression suite
 ```
 Setup for macOS: `docs/SETUP_MACOS.md` · Architecture: `docs/architecture.png` · Report: `docs/PROJECT_REPORT.md` · Viva: `docs/VIVA_QUESTIONS.md` · Custom ML: `ml/ANNOTATION_GUIDE.md`
 
@@ -19,8 +19,9 @@ upload limits, privacy notes, and verification steps.
 
 | Item | Status |
 |---|---|
-| Pure matching tests | The data-independent test (`tests/test_matching.py`) is included |
-| Multi-image search, pipeline and evaluation | Previously exercised with local exam photos; photo-dependent test fixtures and results are intentionally not included |
+| Automated regression tests | 50 tests passed locally on Python 3.12.14, including exact matching, invalid OCR geometry, image validation, room labels, tilted-photo mapping, and multi-image handling |
+| OCR robustness comparison | On the bundled synthetic blurry image, the original RapidOCR pass found fewer full roll tokens than the accepted contrast-enhanced pass; the test checks a relative gain, not an accuracy percentage |
+| Full ground-truth evaluation | The older numbers below are historical and have not been recomputed for these changes; collect and verify local ground truth before quoting current accuracy |
 | YOLO tooling (`ml/`) | Smoke-tested only (1 epoch from scratch, meaningless weights, deleted). **No model has been trained**: only one annotated real photo exists (see `ml/ANNOTATION_GUIDE.md`) |
 | Local walkthrough notebook | Not included because it contains embedded exam data |
 | OCR used for those runs | **RapidOCR** (PP-OCR models through ONNX). PaddleOCR's models could not be downloaded in the build sandbox |
@@ -37,6 +38,8 @@ Evidence gathered:
 * Second trap in the same library: `dt_polys` is a **separate, unfiltered** list; only `rec_texts/rec_scores/rec_polys/rec_boxes` are built together. Mixing them shifts boxes onto other numbers.
 
 **Fix (in `ocr_engine.py`)**: create PaddleOCR with `use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False`; read only `rec_texts/rec_scores/rec_polys`; raise an error if Paddle reports it processed a different image size or used unwarping; and **re-read every highlighted polygon** (`verify_polygon`) so a wrong box can never be shown silently.
+
+A separate tilted-photo crash was reproduced in the bundled sample. `_complete_chain()` could report six columns after inferring multiple missing walls while inserting only one wall. The locator now inserts each inferred wall, checks that the line count and column index agree before indexing, and returns an unverified result for malformed OCR polygons rather than failing the page. The Cloud `TypeError` excerpt supplied with the report did not include enough frames or values to reproduce that exact exception, so it is not claimed to be the same failure.
 
 **Confirm locally** (with PaddleOCR installed):
 ```bash
@@ -66,8 +69,8 @@ RapidOCR is the hosted default. To use PaddleOCR locally, additionally install
 | `seat_locator.py` | grid lines → column/row; room heading association |
 | `pipeline.py` | glue; `python pipeline.py photo.jpg "<registration-number>"` |
 | `multi_search.py` | **many photos, one number**: per-photo error isolation, OCR cache, duplicate/conflict flags |
-| `app.py` | Streamlit interface (multi-file upload, thumbnails, per-photo progress, results) |
-| `tests/test_matching.py` | pytest: data-independent matching rules |
+| `app.py` | Streamlit interface (multi-file upload, thumbnails, per-photo progress, results, editable review/export table) |
+| `tests/` | pytest: matching, coordinate transforms, multi-image behavior, and malformed-input/tilted-photo regressions |
 | `ml/` | optional YOLO table-region tooling: dataset builder, trainer, detector, evaluator, annotation guide |
 | `docs/` | architecture diagram, project report, viva questions, macOS setup |
 | `evaluation.py`, `make_variants.py` | metrics, synthetic photo conditions |
@@ -108,8 +111,8 @@ intentionally excluded from this public repository.
 2. **OCR** → list of `Detection(text, score, polygon)`; text and polygon are never separated. Sideways photos are rotated automatically (transform remembered, polygons mapped back).
 3. **Search** is exact on digits. Letters like `O`/`l` are **never** silently turned into digits: such tokens only appear as candidates. If nothing matches exactly: near-misses with confidence, and the app asks you to confirm explicitly. A match glued to a neighbour is split by position and flagged.
 4. **Verify**: the polygon's pixels are cropped, read again alone, and must say the same number.
-5. **Seat** (OpenCV, no reading-order guessing): de-skew → ridge-filter + Hough find vertical grid lines → the walls on both sides of the number and the chain to the table edges must give **exactly 6 columns** (A–F) → horizontal lines are accepted only if visible in **both text-free margins** of the cell → walking up from the number, same-height bands are rows, the first thinner band must hold one tiny glyph = header row → row 1 is just below it.
-6. **Room**: "Room No: ATR-xxx" is read tolerantly (`Ro0m No`), then attached to the nearest heading **above** the table, unless another table lies between them (then the heading is not this table's, and the room is reported unknown).
+5. **Seat** (OpenCV, no reading-order guessing): de-skew → ridge-filter + Hough find vertical grid lines → the walls on both sides of the number and the chain to the table edges must give **exactly 6 columns** (A–F) → horizontal lines are accepted only if visible in **both text-free margins** of the cell → walking up from the number, same-height bands are rows, the first thinner band must hold one tiny glyph = header row → row 1 is just below it. Grid-chain length and index are checked before use.
+6. **Room**: labels such as "Room No: ATR-xxx", "Room Number: 204", "Room: 204", and "ROOM-204" are recognized; a room value split into adjacent OCR detections is also supported. The room is attached to the nearest heading **above** the table, unless another table lies between them (then the room is reported unknown).
 7. **Confidence** = OCR × re-read score × grid checks; HIGH / MEDIUM / LOW with explicit warnings. Whenever a check fails the seat is "unverified" instead of guessed.
 
 ## 6. Limitations (be upfront with your supervisor)
@@ -118,10 +121,11 @@ intentionally excluded from this public repository.
 * Needs the whole table width and the header row in the photo, sharp enough for ~20 px digits and visible grid lines.
 * Cut-off tables (like the one at the very top of the sample) are deliberately reported "room unknown / unverified".
 * A photo too blurry for the room heading gives the column/row but "room unknown".
+* Handwritten text is not a separately trained OCR target; recognition depends on what the selected text OCR backend can read. The editable review table lets a user correct room/roll fields for export, but edits do not change automatic search results or mark a seat as OCR-verified.
 
-## 7. Evaluation results (RapidOCR stand-in, run in the build sandbox)
+## 7. Historical evaluation results (RapidOCR stand-in; not rerun for the changes above)
 
-Per-query end-to-end: every number on the chart is searched; a miss counts as wrong. 96 numbers per photo. Source: `outputs/eval_summary.md` (regenerate with `python evaluation.py`).
+These figures are from the prior evaluation recorded in `outputs/eval_summary.md`; they are not current accuracy claims. Per-query end-to-end: every number on the chart is searched; a miss counts as wrong. 96 numbers per photo. Re-run `python evaluation.py` against your verified ground truth before relying on or publishing accuracy figures.
 
 | Condition | Real? | Exact number found | Room+column+row all correct | Confident (HIGH) wrong answers |
 |---|---|---|---|---|

@@ -12,6 +12,7 @@ import sys
 
 import cv2
 import numpy as np
+import pandas as pd
 import streamlit as st
 from PIL import Image, UnidentifiedImageError
 
@@ -296,13 +297,49 @@ if reg and (go or st.session_state.get("last_batch_reg") == reg):
 
         ok_out = [o for o in batch.outcomes if o.analysis is not None]
         if ok_out:
-            with st.expander("Developer view: grid detection and every number read"):
+            frames = []
+            for o in ok_out:
+                table = all_numbers_table(o.analysis)
+                table.insert(0, "image", o.name)
+                frames.append(table)
+            review_table = pd.concat(frames, ignore_index=True)
+            with st.expander("Room-wise seating results and manual review", expanded=False):
+                st.caption(
+                    "Edit roll numbers or room values for manual review and export. Manual edits are not "
+                    "OCR-verified and do not change automatic search results."
+                )
+                edited = fit(
+                    st.data_editor,
+                    review_table,
+                    disabled=["image", "letters_converted", "ocr_score", "column", "row", "seat_verified",
+                              "x", "y", "warnings"],
+                    num_rows="fixed",
+                    key="seating_review_" + hashlib.sha1(repr(upload_signature).encode()).hexdigest()[:12],
+                )
+                edited["manual_review"] = (
+                    edited["reg_no"].fillna("").astype(str) != review_table["reg_no"].fillna("").astype(str)
+                ) | (edited["room"].fillna("").astype(str) != review_table["room"].fillna("").astype(str))
+                verified_rows = edited[edited["seat_verified"].fillna(False) & edited["room"].notna()]
+                st.markdown("**Room-wise verified seats**")
+                if verified_rows.empty:
+                    st.info("No room assignments passed the automatic seat verification checks.")
+                else:
+                    fit(st.dataframe, verified_rows.sort_values(["room", "row", "column"], na_position="last"))
+                uncertain_rows = edited[~edited["seat_verified"].fillna(False) | edited["room"].isna()]
+                if not uncertain_rows.empty:
+                    st.markdown("**Entries requiring manual verification**")
+                    fit(st.dataframe, uncertain_rows)
+                st.download_button(
+                    "Download reviewed results (CSV)",
+                    edited.to_csv(index=False),
+                    "examseat_review.csv",
+                    "text/csv",
+                    key="download_review_csv",
+                )
+            with st.expander("Developer view: grid detection"):
                 pick = st.selectbox("Photo", [o.name for o in ok_out])
                 an = next(o.analysis for o in ok_out if o.name == pick)
                 fit(st.image, bgr_to_rgb(an.locator.draw_layout()),
                     caption="blue = detected grid lines, green = numbers, magenta = room headings")
-                tbl = all_numbers_table(an)
-                fit(st.dataframe, tbl, height=300)
-                st.download_button("Download table (CSV)", tbl.to_csv(index=False), "all_numbers.csv", "text/csv")
 else:
     st.caption("Enter a registration number and press **Search all photos**.")

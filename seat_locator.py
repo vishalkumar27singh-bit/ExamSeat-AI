@@ -23,6 +23,7 @@ at this x).
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -34,17 +35,26 @@ from image_processing import Transform, draw_polygon, order_quad, warp_quad
 from ocr_engine import Detection, RegToken, extract_tokens
 
 COLUMN_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+logger = logging.getLogger(__name__)
 
 
 # ==========================================================================
 # Room headings
 # ==========================================================================
-# "Room No: ATR-206" - tolerant to the confusions we really saw: "Ro0mNo:ATR-206"
-_ROOM_RE = re.compile(r"R[O0Q]{2}M\s*N[O0Q]\.?\s*[:;.\-]*\s*([A-Z]{2,6})\s*[-–—_]?\s*([0-9OoIlSB]{2,4})", re.I)
+# Labels and optional alphanumeric prefixes are kept separate so a plain "Room: 204"
+# does not need a configured room prefix.
+_ROOM_RE = re.compile(
+    r"R[O0Q]{2}M\s*(?:(?:N[O0Q]\.?|NUMBER|#)\s*)?[:;.\-–—_ ]*\s*"
+    r"(?:(?P<prefix>[A-Z]{2,6})\s*[-–—_]?\s*)?(?P<num>[0-9OoIlSB]{2,4})(?!\d)",
+    re.I,
+)
 # "Room No: ATR-3RD FLOOR LIB-A" (rooms that are not numbered)
 _ROOM_FREE_RE = re.compile(r"R[O0Q]{2}M\s*N[O0Q]\.?\s*[:;.\-]*\s*([A-Z]{2,6})\s*[-–—_]\s*(\d[A-Z]{2})\s*FL[O0]{2}R\s*([A-Z]{2,5})\s*[-–—_]?\s*([A-Z0-9])\s*$", re.I)
-_ROOM_LABEL_RE = re.compile(r"^\s*R[O0Q]{2}M\s*N[O0Q]?\.?\s*[:;.\-]*\s*$", re.I)
-_ROOM_CODE_RE = re.compile(r"^\s*([A-Z]{2,6})\s*[-–—_]?\s*([0-9OoIlSB]{2,4})\s*$", re.I)
+_ROOM_LABEL_RE = re.compile(r"^\s*R[O0Q]{2}M\s*(?:(?:N[O0Q]\.?|NUMBER|#)\s*)?[:;.\-–—_ ]*\s*$", re.I)
+_ROOM_CODE_RE = re.compile(
+    r"^\s*(?:(?P<prefix>[A-Z]{2,6})\s*[-–—_]?\s*)?(?P<num>[0-9OoIlSB]{2,4})\s*$",
+    re.I,
+)
 _NUM_FIX = {"O": "0", "o": "0", "I": "1", "l": "1", "S": "5", "B": "8"}
 
 
@@ -59,10 +69,10 @@ class RoomHeading:
         return self.det.center
 
 
-def _room_code(letters: str, num: str) -> Tuple[str, str]:
+def _room_code(letters: Optional[str], num: str) -> Tuple[str, str]:
     fixed = "".join(_NUM_FIX.get(c, c) for c in num)
     note = f"room digits '{num}' read as '{fixed}'" if fixed != num else ""
-    return f"{letters.upper()}-{fixed}", note
+    return (f"{letters.upper()}-{fixed}" if letters else fixed), note
 
 
 def find_room_headings(dets: Sequence[Detection], prefixes: Sequence[str] = ("ATR",)) -> List[RoomHeading]:
@@ -79,7 +89,7 @@ def find_room_headings(dets: Sequence[Detection], prefixes: Sequence[str] = ("AT
             continue
         m = _ROOM_RE.search(d.text)
         if m:
-            code, note = _room_code(m.group(1), m.group(2))
+            code, note = _room_code(m.group("prefix"), m.group("num"))
             out.append(RoomHeading(code, d, note))
             used.add(i)
     # label and code in two separate detections ("Room No:" ... "ATR-206")
@@ -96,7 +106,7 @@ def find_room_headings(dets: Sequence[Detection], prefixes: Sequence[str] = ("AT
                 best, bd = e, dx
         if best is not None:
             mm = _ROOM_CODE_RE.match(best.text)
-            code, note = _room_code(mm.group(1), mm.group(2))
+            code, note = _room_code(mm.group("prefix"), mm.group("num"))
             out.append(RoomHeading(code, best, note))
     # configured prefixes written without the 'Room No' label (last resort)
     if not out and prefixes:
@@ -154,6 +164,29 @@ class SeatResult:
     cell_quad: Optional[np.ndarray] = None
     table_key: Optional[Tuple[int, ...]] = None
     heading: Optional[RoomHeading] = None
+
+
+def _polygon(value) -> np.ndarray:
+    """Return finite polygon points in (N, 2) form or raise a clear input error."""
+    if value is None:
+        raise ValueError("polygon is missing")
+    try:
+        points = np.asarray(value, dtype=np.float64)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("polygon coordinates must be numeric") from exc
+    if points.ndim == 1 and points.size >= 6 and points.size % 2 == 0:
+        points = points.reshape(-1, 2)
+    elif points.ndim >= 2 and points.shape[-1] == 2:
+        points = points.reshape(-1, 2)
+    else:
+        raise ValueError("polygon must contain at least three (x, y) points")
+    if len(points) < 3:
+        raise ValueError("polygon must contain at least three (x, y) points")
+    if not np.isfinite(points).all():
+        raise ValueError("polygon coordinates must be finite")
+    if cv2.contourArea(points.astype(np.float32)) <= 1e-3:
+        raise ValueError("polygon has no measurable area")
+    return points
 
 
 # ==========================================================================
@@ -232,7 +265,28 @@ class SeatLocator:
         else:
             self.img, self.T = img, Transform.identity()
         self.H, self.W = self.img.shape[:2]
-        self.dets = [Detection(d.text, d.score, self.T.apply(d.poly).astype(np.float32), d.index, d.tag) for d in detections]
+        self.dets: List[Detection] = []
+        for i, detection in enumerate(detections):
+            try:
+                if not isinstance(detection, Detection):
+                    raise ValueError("detection has an unsupported type")
+                if not isinstance(detection.text, str) or not detection.text.strip():
+                    raise ValueError("detection text is empty")
+                score = float(detection.score)
+                if not np.isfinite(score) or not 0.0 <= score <= 1.0:
+                    raise ValueError("detection confidence is invalid")
+                polygon = _polygon(detection.poly)
+                if len(polygon) != 4:
+                    polygon = order_quad(
+                        cv2.boxPoints(cv2.minAreaRect(polygon.astype(np.float32)))
+                    ).astype(np.float64)
+                transformed = self.T.apply(polygon).astype(np.float32)
+                if not np.isfinite(transformed).all():
+                    raise ValueError("transformed coordinates are not finite")
+            except (TypeError, ValueError, OverflowError, cv2.error) as exc:
+                logger.warning("Ignoring malformed OCR detection %d in seat locator: %s", i, exc)
+                continue
+            self.dets.append(Detection(detection.text, score, transformed, detection.index, detection.tag))
         self.tokens = extract_tokens(self.dets)
         full = [t for t in self.tokens if t.kind == "full"]
         # u = text height in pixels; every length below is a multiple of u (works for any resolution)
@@ -404,16 +458,20 @@ class SeatLocator:
             for side in (-1, 1):
                 ref = lines[0] if side < 0 else lines[-1]
                 for extra in range(1, self.n_cols - n + 1):
-                    v = VLine(-(ref.id + 1) * 1000 - (1 if side < 0 else 2), ref.a, ref.b + side * med * extra, ref.y0, ref.y1, 0.0, True)
-                    v.b = (xs[0] - med * extra if side < 0 else xs[-1] + med * extra) - v.a * cy
-                    new = ([v] + lines) if side < 0 else (lines + [v])
+                    steps = range(extra, 0, -1) if side < 0 else range(1, extra + 1)
+                    virtual = []
+                    for step in steps:
+                        x = xs[0] - med * step if side < 0 else xs[-1] + med * step
+                        ident = -(abs(ref.id) + 1) * 1000 - step * 2 - (1 if side < 0 else 2)
+                        virtual.append(VLine(ident, ref.a, x - ref.a * cy, ref.y0, ref.y1, 0.0, True))
+                    new = virtual + lines if side < 0 else lines + virtual
                     xx = np.array([L.x_at(cy) for L in new])
                     cands.append((abs((xx[0] + xx[-1]) / 2 - tx), new, idx + (extra if side < 0 else 0)))
         if not cands:
             return {**ch, "note": "columns found do not line up with the sheet's centred title"}
         cands.sort(key=lambda c: c[0])
         d0, ln, ix = cands[0]
-        if d0 > 0.5 * med or not (0 <= ix < self.n_cols):
+        if d0 > 0.5 * med or len(ln) != self.n_cols + 1 or not (0 <= ix < self.n_cols):
             return {**ch, "note": "columns found do not line up with the sheet's centred title"}
         return {"lines": ln, "idx": ix, "total": self.n_cols, "note": "", "inferred": any(L.virtual for L in ln)}
 
@@ -589,9 +647,9 @@ class SeatLocator:
                 r = self._locate_raw(self.T.inverse().apply(np.asarray(t.det.poly, dtype=np.float64)))
                 if r.verified:
                     self._cells.setdefault((r.room, r.column, r.row), set()).add(t.digits)
-        poly0 = det_or_poly.poly if isinstance(det_or_poly, Detection) else np.asarray(det_or_poly)
+        poly0 = _polygon(det_or_poly.poly if isinstance(det_or_poly, Detection) else det_or_poly)
         mine = {t.digits for t in self.tokens if t.kind == "full" and
-                np.linalg.norm(t.det.center - self.T.apply(np.asarray(poly0, dtype=np.float64)).mean(axis=0)) < 0.5 * self.u}
+                np.linalg.norm(t.det.center - self.T.apply(poly0).mean(axis=0)) < 0.5 * self.u}
         others = self._cells.get((res.room, res.column, res.row), set()) - mine
         res.checks["unique_cell"] = not others
         if others:
@@ -605,10 +663,22 @@ class SeatLocator:
         """Room / column / row of a registration number.  Accepts a Detection or a polygon
         in WORKING-image coordinates."""
         u = self.u
-        poly0 = det_or_poly.poly if isinstance(det_or_poly, Detection) else np.asarray(det_or_poly)
-        poly = self.T.apply(np.asarray(poly0, dtype=np.float64)).astype(np.float32)
-        cx, cy = poly.mean(axis=0)
         res = SeatResult(False, None, None, None)
+        try:
+            poly0 = _polygon(det_or_poly.poly if isinstance(det_or_poly, Detection) else det_or_poly)
+            poly = self.T.apply(poly0).astype(np.float32)
+        except (TypeError, ValueError, OverflowError, cv2.error) as exc:
+            res.checks["valid_polygon"] = False
+            res.warnings.append(f"Seat could not be located because OCR returned invalid coordinates: {exc}.")
+            logger.warning("Skipping invalid seat polygon: %s", exc)
+            return res
+        if not np.isfinite(poly).all():
+            res.checks["valid_polygon"] = False
+            res.warnings.append("Seat could not be located because transformed OCR coordinates are not finite.")
+            logger.warning("Skipping seat polygon with non-finite transformed coordinates")
+            return res
+        res.checks["valid_polygon"] = True
+        cx, cy = poly.mean(axis=0)
         chk, w = res.checks, res.warnings
 
         # ---- column -------------------------------------------------------
@@ -618,9 +688,12 @@ class SeatLocator:
                      "Please retake the photo (whole table visible, in focus, good light).")
             return res
         chk["six_columns"] = ch["total"] == self.n_cols
-        if not chk["six_columns"]:
+        valid_chain = (len(ch["lines"]) == self.n_cols + 1 and 0 <= ch["idx"] < self.n_cols)
+        if not chk["six_columns"] or not valid_chain:
             w.append(f"Expected {self.n_cols} table columns but detected {ch['total']} "
                      f"{('(' + ch['note'] + ') ') if ch['note'] else ''}- cannot name the column reliably.")
+            if not valid_chain:
+                w.append("The detected grid boundaries were inconsistent; no column was assigned.")
             res.grid_confidence = 0.2
             return res
         lines, idx = ch["lines"], ch["idx"]

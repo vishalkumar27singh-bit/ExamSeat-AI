@@ -17,6 +17,7 @@ Command line:  python multi_search.py "<registration-number>" photo1.jpg photo2.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import sys
 import time
@@ -33,6 +34,7 @@ from pipeline import Analysis, MatchReport, analyze, search
 Source = Tuple[str, Union[bytes, str]]          # (display name, file bytes or a path)
 
 FOUND, NOT_FOUND, ERROR = "FOUND", "NOT_FOUND", "ERROR"
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -149,7 +151,8 @@ def search_many(sources: Sequence[Source], query_raw: str, engine: OCREngine,
             if res.status != "FOUND":
                 out.message = "Registration Number Not Found"
         except Exception as e:                    # one bad photo must never stop the others
-            out = ImageOutcome(name, ERROR, f"{type(e).__name__}: {e}")
+            logger.exception("Could not process uploaded image %r", name)
+            out = ImageOutcome(name, ERROR, f"Could not process this photo. {type(e).__name__}: {e}")
             if os.environ.get("EXAMSEAT_DEBUG"):
                 traceback.print_exc()
         out.seconds = round(time.time() - t0, 2)

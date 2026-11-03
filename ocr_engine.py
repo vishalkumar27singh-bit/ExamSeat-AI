@@ -23,6 +23,7 @@ This engine therefore
 """
 from __future__ import annotations
 
+import logging
 import re
 import sys
 import unicodedata
@@ -36,6 +37,7 @@ from image_processing import (crop_polygon, draw_polygon, enhance, load_image, o
                               poly_bbox, poly_iou)
 
 REG_LEN = 10  # registration numbers at this university are 10 digits
+logger = logging.getLogger(__name__)
 
 
 # ==========================================================================
@@ -111,10 +113,24 @@ class VerifyResult:
 # OCR backends
 # ==========================================================================
 def _quad(poly) -> np.ndarray:
-    p = np.asarray(poly, dtype=np.float32).reshape(-1, 2)
+    try:
+        p = np.asarray(poly, dtype=np.float32)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("OCR polygon coordinates must be numeric") from exc
+    if p.ndim == 1 and p.size >= 6 and p.size % 2 == 0:
+        p = p.reshape(-1, 2)
+    elif p.ndim >= 2 and p.shape[-1] == 2:
+        p = p.reshape(-1, 2)
+    else:
+        raise ValueError("OCR polygon must contain at least three (x, y) points")
+    if len(p) < 3 or not np.isfinite(p).all():
+        raise ValueError("OCR polygon must contain at least three finite points")
     if len(p) != 4:  # curved / polygon text -> minimum-area rectangle
         p = cv2.boxPoints(cv2.minAreaRect(p))
-    return order_quad(p)
+    quad = order_quad(p)
+    if cv2.contourArea(quad) <= 1e-3:
+        raise ValueError("OCR polygon has no measurable area")
+    return quad
 
 
 class _PaddleBackend:
@@ -143,7 +159,10 @@ class _PaddleBackend:
             if not res:
                 return []
             r = res[0]
-            texts, scores, polys = list(r["rec_texts"]), list(r["rec_scores"]), list(r["rec_polys"])
+            try:
+                texts, scores, polys = list(r["rec_texts"]), list(r["rec_scores"]), list(r["rec_polys"])
+            except (KeyError, TypeError) as exc:
+                raise RuntimeError("PaddleOCR returned an incomplete recognition result") from exc
             if not (len(texts) == len(scores) == len(polys)):
                 raise RuntimeError(f"PaddleOCR returned misaligned lists: texts={len(texts)} "
                                    f"scores={len(scores)} polys={len(polys)}")
@@ -158,11 +177,20 @@ class _PaddleBackend:
                 if (oh, ow) != tuple(img.shape[:2]):
                     raise RuntimeError(f"PaddleOCR processed a {ow}x{oh} image but input was "
                                        f"{img.shape[1]}x{img.shape[0]} - polygons would be in the wrong space.")
-            return [(_quad(p), str(t), float(s)) for p, t, s in zip(polys, texts, scores)]
+            return list(zip(polys, texts, scores))
         # PaddleOCR 2.x
         res = self.ocr.ocr(img, cls=False)
         lines = res[0] if res and res[0] else []
-        return [(_quad(p), str(t), float(s)) for p, (t, s) in lines]
+        out = []
+        for line in lines:
+            try:
+                polygon, recognition = line
+                text, score = recognition
+            except (TypeError, ValueError):
+                out.append(line)
+                continue
+            out.append((polygon, text, score))
+        return out
 
 
 class _RapidBackend:
@@ -182,11 +210,13 @@ class _RapidBackend:
     def run(self, img: np.ndarray) -> List[Tuple[np.ndarray, str, float]]:
         if self.new_api:
             r = self.eng(img)
-            if r is None or r.boxes is None:
+            if r is None or r.boxes is None or r.txts is None or r.scores is None:
                 return []
-            return [(_quad(b), str(t), float(s)) for b, t, s in zip(r.boxes, r.txts, r.scores)]
+            if not (len(r.boxes) == len(r.txts) == len(r.scores)):
+                raise RuntimeError("RapidOCR returned misaligned boxes, texts, and scores")
+            return list(zip(r.boxes, r.txts, r.scores))
         res, _ = self.eng(img)
-        return [(_quad(p), str(t), float(s)) for p, t, s in (res or [])]
+        return [(p, t, s) for p, t, s in (res or [])]
 
 
 class OCREngine:
@@ -216,9 +246,28 @@ class OCREngine:
 
     def run(self, img_bgr: np.ndarray, tag: str = "") -> List[Detection]:
         """OCR `img_bgr`.  Returned polygons are in THIS array's pixel coordinates."""
+        if not isinstance(img_bgr, np.ndarray) or img_bgr.size == 0:
+            raise ValueError("OCR input must be a non-empty image array")
+        if img_bgr.ndim == 2:
+            img_bgr = cv2.cvtColor(img_bgr, cv2.COLOR_GRAY2BGR)
+        if img_bgr.ndim != 3 or img_bgr.shape[2] != 3 or img_bgr.dtype != np.uint8:
+            raise ValueError("OCR input must be a uint8 BGR or grayscale image")
         out = []
-        for i, (poly, text, score) in enumerate(self._b.run(img_bgr)):
-            out.append(Detection(text=text, score=score, poly=poly.astype(np.float32), index=i, tag=tag))
+        raw = self._b.run(img_bgr)
+        if raw is None:
+            logger.warning("OCR backend %s returned no result object", self.name)
+            return out
+        for i, item in enumerate(raw):
+            try:
+                poly, text, score = item
+                if text is None or not str(text).strip():
+                    raise ValueError("OCR text is empty")
+                score = float(score)
+                if not np.isfinite(score) or not 0.0 <= score <= 1.0:
+                    raise ValueError("OCR confidence must be finite and between 0 and 1")
+                out.append(Detection(text=str(text), score=score, poly=_quad(poly), index=i, tag=tag))
+            except (TypeError, ValueError, OverflowError, cv2.error) as exc:
+                logger.warning("Ignoring malformed OCR result %d from %s: %s", i, self.name, exc)
         return out
 
 

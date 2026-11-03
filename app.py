@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import io
 import hashlib
+import importlib
 import importlib.util
 import os
 import sys
@@ -16,14 +17,31 @@ import pandas as pd
 import streamlit as st
 from PIL import Image, UnidentifiedImageError
 
+st.set_page_config(page_title="ExamSeat AI", page_icon="🪑", layout="wide")
+
+APP_VERSION = "multi-image 2026-11-03.2"
+ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import image_processing as _image_processing
+import ocr_engine as _ocr_engine
+import seat_locator as _seat_locator
+import pipeline as _pipeline
+import multi_search as _multi_search
+
+if st.session_state.get("_examseat_runtime_version") != APP_VERSION:
+    for module in (_image_processing, _ocr_engine, _seat_locator, _pipeline, _multi_search):
+        importlib.reload(module)
+    st.session_state["_examseat_runtime_version"] = APP_VERSION
+    for key in ("confirmed", "ocr_cache", "analysis_key", "batch", "batch_key", "last_batch_reg"):
+        st.session_state.pop(key, None)
+    st.cache_resource.clear()
+
 from image_processing import bgr_to_rgb, load_image
 from multi_search import ERROR, FOUND, NOT_FOUND, candidates_across, search_many
 from ocr_engine import OCREngine
 from pipeline import all_numbers_table, render_crop, render_highlight, render_seat_view
 
-APP_VERSION = "multi-image 2026-11-03"      # shown on the page: identifies this app build
-ROOT = os.path.dirname(os.path.abspath(__file__))
 SAMPLE = os.path.join(ROOT, "samples", "photo_001_clear.jpeg")
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_BATCH_BYTES = 30 * 1024 * 1024
@@ -33,9 +51,6 @@ MAX_IMAGE_PIXELS = 20_000_000
 def clear_search_state() -> None:
     for key in ("confirmed", "ocr_cache", "analysis_key", "batch", "batch_key", "last_batch_reg"):
         st.session_state.pop(key, None)
-
-
-st.set_page_config(page_title="ExamSeat AI", page_icon="🪑", layout="wide")
 
 
 @st.cache_resource(show_spinner="Loading OCR models (first time only)…")
@@ -132,7 +147,7 @@ for uploaded in uploaded_files:
 if use_sample and os.path.exists(SAMPLE):
     sources.append(("sample_photo_001_clear.jpeg", open(SAMPLE, "rb").read()))
 upload_signature = tuple((n, hashlib.sha256(d).hexdigest()) for n, d in sources)
-analysis_key = (upload_signature, backend, auto_rotate)
+analysis_key = (APP_VERSION, upload_signature, backend, auto_rotate)
 cache = st.session_state.setdefault("ocr_cache", {})
 if st.session_state.get("analysis_key") != analysis_key:
     cache.clear()

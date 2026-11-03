@@ -92,7 +92,8 @@ intentionally excluded from this public repository.
 
 ## 4a. "Is the app really using all my photos?" (and how to be sure you run THIS version)
 
-* The page shows **App version: multi-image 2026-11-03**. If you do not see that line, you are running an old copy of `app.py` (another folder, or an old `streamlit run` still open): stop it with Ctrl+C and start it from this folder.
+* The page shows **App version: multi-image 2026-11-03.2**. If you do not see that line, you are running an old copy of `app.py` (another folder, or an old `streamlit run` still open): stop it with Ctrl+C and start it from this folder.
+* On a version change, the app reloads its processing modules and clears session OCR/resource caches so cached objects from the previous code version are not reused.
 * The uploader is `st.file_uploader("Upload all seating chart photos", ..., accept_multiple_files=True)`. Click **Browse files** and select several files at once (Cmd/Shift-click), or drag several in; you can also add files one after another.
 * There is no photo-count limit. Uploads are limited to 10 MB per photo, 30 MB total, and 20 megapixels per image to keep public-hosting resource use bounded.
 * Debug details are off by default. Use **Clear this session's photos and results** in the sidebar to discard temporary session data.

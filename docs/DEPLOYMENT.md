@@ -18,6 +18,8 @@ not require a database or deployment secrets. The public GitHub repository is th
 6. Wait for the app health indicator to show running and open the assigned `https://…streamlit.app` URL.
 
 The first launch installs `requirements.txt` and initializes the RapidOCR/ONNX runtime.
+`packages.txt` installs the system OpenGL library required by the `opencv-python` wheel
+on Streamlit Community Cloud.
 The hosted app offers RapidOCR. PaddleOCR is an optional local backend and is deliberately
 not installed on the free hosted instance to reduce build size and memory requirements.
 

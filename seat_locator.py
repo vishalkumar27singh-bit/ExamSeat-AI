@@ -268,14 +268,13 @@ class SeatLocator:
         self.dets: List[Detection] = []
         for i, detection in enumerate(detections):
             try:
-                if not isinstance(detection, Detection):
-                    raise ValueError("detection has an unsupported type")
-                if not isinstance(detection.text, str) or not detection.text.strip():
+                text = getattr(detection, "text", None)
+                if not isinstance(text, str) or not text.strip():
                     raise ValueError("detection text is empty")
-                score = float(detection.score)
+                score = float(getattr(detection, "score"))
                 if not np.isfinite(score) or not 0.0 <= score <= 1.0:
                     raise ValueError("detection confidence is invalid")
-                polygon = _polygon(detection.poly)
+                polygon = _polygon(getattr(detection, "poly", None))
                 if len(polygon) != 4:
                     polygon = order_quad(
                         cv2.boxPoints(cv2.minAreaRect(polygon.astype(np.float32)))
@@ -286,7 +285,8 @@ class SeatLocator:
             except (TypeError, ValueError, OverflowError, cv2.error) as exc:
                 logger.warning("Ignoring malformed OCR detection %d in seat locator: %s", i, exc)
                 continue
-            self.dets.append(Detection(detection.text, score, transformed, detection.index, detection.tag))
+            self.dets.append(Detection(text, score, transformed,
+                                       getattr(detection, "index", i), getattr(detection, "tag", "")))
         self.tokens = extract_tokens(self.dets)
         full = [t for t in self.tokens if t.kind == "full"]
         # u = text height in pixels; every length below is a multiple of u (works for any resolution)
@@ -647,7 +647,7 @@ class SeatLocator:
                 r = self._locate_raw(self.T.inverse().apply(np.asarray(t.det.poly, dtype=np.float64)))
                 if r.verified:
                     self._cells.setdefault((r.room, r.column, r.row), set()).add(t.digits)
-        poly0 = _polygon(det_or_poly.poly if isinstance(det_or_poly, Detection) else det_or_poly)
+        poly0 = _polygon(getattr(det_or_poly, "poly", det_or_poly))
         mine = {t.digits for t in self.tokens if t.kind == "full" and
                 np.linalg.norm(t.det.center - self.T.apply(poly0).mean(axis=0)) < 0.5 * self.u}
         others = self._cells.get((res.room, res.column, res.row), set()) - mine
@@ -665,7 +665,7 @@ class SeatLocator:
         u = self.u
         res = SeatResult(False, None, None, None)
         try:
-            poly0 = _polygon(det_or_poly.poly if isinstance(det_or_poly, Detection) else det_or_poly)
+            poly0 = _polygon(getattr(det_or_poly, "poly", det_or_poly))
             poly = self.T.apply(poly0).astype(np.float32)
         except (TypeError, ValueError, OverflowError, cv2.error) as exc:
             res.checks["valid_polygon"] = False

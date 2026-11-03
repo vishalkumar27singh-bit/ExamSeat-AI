@@ -48,6 +48,62 @@ def test_locator_skips_malformed_ocr_detections(caplog):
     assert "Ignoring malformed OCR detection" in caplog.text
 
 
+def test_locator_accepts_detection_objects_from_another_module_identity():
+    class ForeignDetection:
+        def __init__(self, detection):
+            self.text = detection.text
+            self.score = detection.score
+            self.poly = detection.poly
+            self.index = detection.index
+            self.tag = detection.tag
+
+        @property
+        def center(self):
+            return self.poly.mean(axis=0)
+
+    image = np.full((300, 400, 3), 255, np.uint8)
+    detection = ForeignDetection(_det("2401100681"))
+    locator = SeatLocator(image, [detection])
+
+    assert len(locator.dets) == 1
+    result = locator.locate(detection)
+    assert not result.verified
+    assert result.room is None
+
+
+def test_all_numbers_table_handles_foreign_detection_identity():
+    class ForeignDetection:
+        def __init__(self, detection):
+            self.text = detection.text
+            self.score = detection.score
+            self.poly = detection.poly
+            self.index = detection.index
+            self.tag = detection.tag
+
+        @property
+        def center(self):
+            return self.poly.mean(axis=0)
+
+    image = np.full((300, 400, 3), 255, np.uint8)
+    foreign = ForeignDetection(_det("2401100681"))
+    analysis = Analysis(
+        original=image,
+        work=image,
+        to_work=Transform.identity(),
+        detections=[foreign],
+        engine_name="test",
+        engine_note=None,
+        quality=image_quality(image),
+        fingerprint=image_fingerprint(image),
+    )
+
+    table = all_numbers_table(analysis)
+
+    assert table["reg_no"].tolist() == ["2401100681"]
+    assert table["room"].isna().all()
+    assert not table["seat_verified"].any()
+
+
 @pytest.mark.parametrize("value", [
     None,
     np.empty((0, 4, 2), dtype=np.uint8),

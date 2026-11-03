@@ -1,18 +1,14 @@
-# ExamSeat AI - dependencies.
-# You ALREADY have most of these in your Anaconda environment - do NOT reinstall them.
-# Check first:  pip list | grep -i -E "opencv|pandas|pillow|paddle|streamlit|numpy|tabulate|pytest|ultralytics"
-numpy>=1.23
-opencv-python>=4.8        # already installed
-pandas>=1.5               # already installed
-Pillow>=9.0               # already installed
-paddlepaddle>=3.0         # already installed
-paddleocr>=3.0            # already installed (3.x API; 2.x also handled)
-streamlit>=1.37           # app.py
-tabulate>=0.9             # evaluation.py markdown report
-# optional fallback OCR (same PP-OCR model family, models are inside the wheel, works offline):
-rapidocr-onnxruntime>=1.2
+# Runtime dependencies for Streamlit Community Cloud and local use.
+# RapidOCR uses the PP-OCR model family with ONNX Runtime and avoids requiring
+# PaddlePaddle's larger deployment footprint. PaddleOCR remains an optional
+# local backend; OCREngine("auto") falls back to RapidOCR when it is absent.
+streamlit>=1.37,<2
+numpy>=1.26,<3
+opencv-python>=4.10,<5
+pandas>=2.1,<4
+Pillow>=10,<13
+rapidocr-onnxruntime>=1.3,<2
+tabulate>=0.9,<1
 
-# ---- only for tests / custom ML (install when you need them) ----
-# pytest>=7                 # python -m pytest tests
-# playwright>=1.40          # python tests/e2e_streamlit_upload.py  (then: playwright install chromium)
-# ultralytics>=8.3          # ml/train_yolo.py (pulls in torch; large download)
+# Test-only: pytest>=8,<10
+# Optional custom ML training (large download): ultralytics>=8.3

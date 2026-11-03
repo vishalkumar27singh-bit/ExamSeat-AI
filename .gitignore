@@ -1,8 +1,13 @@
 .DS_Store
-.venv/
+.venv*/
 __pycache__/
 .pytest_cache/
 *.py[cod]
+.env
+.env.*
+!.env.example
+secrets.toml
+.streamlit/secrets.toml
 
 # Local exam data and generated OCR/evaluation results
 /samples/
@@ -10,6 +15,11 @@ __pycache__/
 /outputs/
 /diagnostics/
 /ExamSeatAI_stage_by_stage.ipynb
+/ml/dataset/
+/ml/runs/
+/ml/weights/
+/ml/*.pt
+/ml/*.onnx
 
 # These tests require the excluded real exam photos
 /tests/conftest.py

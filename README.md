@@ -9,6 +9,12 @@ python -m pytest tests/test_matching.py -q                 # pure matching tests
 ```
 Setup for macOS: `docs/SETUP_MACOS.md` · Architecture: `docs/architecture.png` · Report: `docs/PROJECT_REPORT.md` · Viva: `docs/VIVA_QUESTIONS.md` · Custom ML: `ml/ANNOTATION_GUIDE.md`
 
+## Public deployment
+
+The app is a single Streamlit service; it has no separate API or database. See
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for deployment to Streamlit Community Cloud,
+upload limits, privacy notes, and verification steps.
+
 ## 0. What was actually tested (read this first)
 
 | Item | Status |
@@ -32,22 +38,23 @@ Evidence gathered:
 
 **Fix (in `ocr_engine.py`)**: create PaddleOCR with `use_doc_orientation_classify=False, use_doc_unwarping=False, use_textline_orientation=False`; read only `rec_texts/rec_scores/rec_polys`; raise an error if Paddle reports it processed a different image size or used unwarping; and **re-read every highlighted polygon** (`verify_polygon`) so a wrong box can never be shown silently.
 
-**Confirm on your Mac** (inside your Anaconda environment):
+**Confirm locally** (with PaddleOCR installed):
 ```bash
 cd examseat_ai
 python diagnose_coordinates.py "<photo>" "<registration-number>"
 ```
 It prints image facts, the config PaddleOCR used, list lengths, and crops of every candidate polygon (saved in `diagnostics/`) re-read by OCR, then a verdict.
 
-## 2. Setup on macOS (nothing to reinstall)
+## 2. Setup on macOS
 
 ```bash
-conda activate <your-existing-ml-env>
-pip list | grep -i -E "opencv|pandas|pillow|paddle|streamlit|numpy|tabulate"   # see what you already have
-pip install streamlit tabulate        # ONLY if the list above lacks them
-pip install rapidocr-onnxruntime      # optional offline fallback OCR
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
 ```
-First PaddleOCR run downloads its models (needs internet once).
+
+RapidOCR is the hosted default. To use PaddleOCR locally, additionally install
+`paddlepaddle>=3.0` and `paddleocr>=3.0`. See [`docs/SETUP_MACOS.md`](docs/SETUP_MACOS.md).
 
 ## 3. Files
 
@@ -60,11 +67,11 @@ First PaddleOCR run downloads its models (needs internet once).
 | `pipeline.py` | glue; `python pipeline.py photo.jpg "<registration-number>"` |
 | `multi_search.py` | **many photos, one number**: per-photo error isolation, OCR cache, duplicate/conflict flags |
 | `app.py` | Streamlit interface (multi-file upload, thumbnails, per-photo progress, results) |
-| `tests/` | pytest: matching rules, coordinates (rotation/scale), multi-image behaviour; `e2e_streamlit_upload.py` drives the real app in a browser |
+| `tests/test_matching.py` | pytest: data-independent matching rules |
 | `ml/` | optional YOLO table-region tooling: dataset builder, trainer, detector, evaluator, annotation guide |
 | `docs/` | architecture diagram, project report, viva questions, macOS setup |
 | `evaluation.py`, `make_variants.py` | metrics, synthetic photo conditions |
-| `ground_truth/` | manually verified annotations (JSON) |
+| Local evaluation data | Excluded from the public repository because it contains exam photos and student identifiers |
 | Local notebook | Not included in this repository because it contains embedded exam data |
 
 ## 4. Running it, stage by stage
@@ -77,12 +84,15 @@ streamlit run app.py                                    # 7. web app (opens in y
 python evaluation.py                                    # 8. metrics on ground_truth/*.json
 ```
 The local walkthrough notebook is not included because it contains embedded exam data.
+The evaluation command requires locally maintained files under `ground_truth/`, which are
+intentionally excluded from this public repository.
 
 ## 4a. "Is the app really using all my photos?" (and how to be sure you run THIS version)
 
-* The page shows **App version: multi-image 2026-10-19 · running from `<path>`**. If you do not see that line, you are running an old copy of `app.py` (another folder, or an old `streamlit run` still open): stop it with Ctrl+C and start it from this folder.
+* The page shows **App version: multi-image 2026-11-03**. If you do not see that line, you are running an old copy of `app.py` (another folder, or an old `streamlit run` still open): stop it with Ctrl+C and start it from this folder.
 * The uploader is `st.file_uploader("Upload all seating chart photos", ..., accept_multiple_files=True)`. Click **Browse files** and select several files at once (Cmd/Shift-click), or drag several in; you can also add files one after another.
-* **Debug info (temporary)** is on by default in the sidebar: it shows `len(uploaded_files)`, every file's name/size/hash, a status per photo, and prints one `[ExamSeat debug] ...` line per search in the terminal. Untick it to hide it.
+* Uploads are limited to 5 photos, 10 MB per photo, 30 MB total, and 20 megapixels per image to keep public-hosting resource use bounded.
+* Debug details are off by default. Use **Clear this session's photos and results** in the sidebar to discard temporary session data.
 * Room, column and row are shown **only when the seat is verified**; otherwise the app says "not verified".
 
 ## 4b. Multi-image search — how it behaves

@@ -4,12 +4,16 @@ Run:  streamlit run app.py
 """
 from __future__ import annotations
 
+import io
+import hashlib
+import importlib.util
 import os
 import sys
 
 import cv2
 import numpy as np
 import streamlit as st
+from PIL import Image, UnidentifiedImageError
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from image_processing import bgr_to_rgb, load_image
@@ -17,9 +21,19 @@ from multi_search import ERROR, FOUND, NOT_FOUND, candidates_across, search_many
 from ocr_engine import OCREngine
 from pipeline import all_numbers_table, render_crop, render_highlight, render_seat_view
 
-APP_VERSION = "multi-image 2026-10-19"      # shown on the page: proves WHICH copy of the app is running
+APP_VERSION = "multi-image 2026-11-03"      # shown on the page: identifies this app build
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SAMPLE = os.path.join(ROOT, "samples", "photo_001_clear.jpeg")
+MAX_PHOTOS = 5
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_BATCH_BYTES = 30 * 1024 * 1024
+MAX_IMAGE_PIXELS = 20_000_000
+
+
+def clear_search_state() -> None:
+    for key in ("confirmed", "ocr_cache", "analysis_key", "batch", "batch_key", "last_batch_reg"):
+        st.session_state.pop(key, None)
+
 
 st.set_page_config(page_title="ExamSeat AI", page_icon="🪑", layout="wide")
 
@@ -29,7 +43,6 @@ def get_engine(backend: str) -> OCREngine:
     return OCREngine(backend)
 
 
-@st.cache_data(show_spinner=False, max_entries=64)
 def _thumb(data: bytes, side: int = 220):
     """Small preview; an unreadable file gives None (it is reported later, not fatal)."""
     try:
@@ -61,27 +74,75 @@ def level_box(level: str, text: str) -> None:
 # --------------------------------------------------------------------------- sidebar
 with st.sidebar:
     st.header("Settings")
-    backend = st.selectbox("OCR engine", ["auto", "paddle", "rapid"],
-                           help="auto = PaddleOCR, falling back to RapidOCR (same model family) if Paddle cannot start.")
+    has_paddle = importlib.util.find_spec("paddleocr") is not None
+    backends = ["auto", "paddle", "rapid"] if has_paddle else ["rapid"]
+    backend = st.selectbox("OCR engine", backends,
+                           help="RapidOCR is the hosted default. If installed locally, auto prefers PaddleOCR and "
+                                "falls back to RapidOCR (same model family).")
     auto_rotate = st.checkbox("Auto-rotate sideways photos", True)
     use_sample = st.checkbox("Also add the bundled sample photo", False, disabled=not os.path.exists(SAMPLE))
-    show_debug = st.checkbox("Show debug info (temporary)", True,
+    show_debug = st.checkbox("Show debug info (temporary)", False,
                              help="Shows how many files were received and that each one was processed.")
     st.caption("Tip: photograph each whole table straight-on, in focus, without glare. "
                "Every photo is processed on its own.")
+    if st.button("Clear this session's photos and results"):
+        clear_search_state()
+        st.session_state.pop("seat_photos", None)
+        st.rerun()
 
 st.title("🪑 ExamSeat AI")
 st.caption("Find an examination seat across several seating-chart photos - exact matching, verified highlighting, "
            "and honest warnings when something cannot be verified.")
-
-st.caption(f"App version: **{APP_VERSION}** · running from `{os.path.abspath(__file__)}`")
+st.caption(f"App version: **{APP_VERSION}**")
+st.info("Privacy: uploaded photos and registration numbers are processed by this hosted app. "
+        "The app does not save uploads or results to a database or persistent files, but keeps temporary "
+        "session data in memory while processing. Only upload material you are authorized to use.")
 
 # ---- upload: ALL files are kept in a list; nothing below ever uses only the first one -----------------
 uploaded_files = st.file_uploader("Upload all seating chart photos", type=["jpg", "jpeg", "png"],
-                                  accept_multiple_files=True, key="seat_photos")
-sources = [(f.name, f.getvalue()) for f in (uploaded_files or [])]      # one (name, bytes) per uploaded file
+                                  accept_multiple_files=True, key="seat_photos",
+                                  help="Up to 5 photos; 10 MB per photo and 30 MB total. "
+                                       "Images must be at most 20 megapixels.")
+uploaded_files = uploaded_files or []
+if len(uploaded_files) > MAX_PHOTOS:
+    clear_search_state()
+    st.error(f"Please upload no more than {MAX_PHOTOS} photos at a time.")
+    st.stop()
+if any(f.size > MAX_UPLOAD_BYTES for f in uploaded_files):
+    clear_search_state()
+    st.error("Each photo must be 10 MB or smaller.")
+    st.stop()
+if sum(f.size for f in uploaded_files) > MAX_BATCH_BYTES:
+    clear_search_state()
+    st.error("The combined upload size must be 30 MB or smaller.")
+    st.stop()
+
+sources = []
+for uploaded in uploaded_files:
+    data = uploaded.getvalue()
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            if image.width * image.height > MAX_IMAGE_PIXELS:
+                clear_search_state()
+                st.error(f"{uploaded.name} is larger than the 20-megapixel image limit.")
+                st.stop()
+    except Image.DecompressionBombError:
+        clear_search_state()
+        st.error(f"{uploaded.name} is larger than the 20-megapixel image limit.")
+        st.stop()
+    except (UnidentifiedImageError, OSError):
+        pass  # Keep unreadable uploads in the batch so they receive the normal per-photo error result.
+    sources.append((uploaded.name, data))
 if use_sample and os.path.exists(SAMPLE):
     sources.append(("sample_photo_001_clear.jpeg", open(SAMPLE, "rb").read()))
+upload_signature = tuple((n, hashlib.sha256(d).hexdigest()) for n, d in sources)
+analysis_key = (upload_signature, backend, auto_rotate)
+cache = st.session_state.setdefault("ocr_cache", {})
+if st.session_state.get("analysis_key") != analysis_key:
+    cache.clear()
+    for key in ("batch", "batch_key", "last_batch_reg"):
+        st.session_state.pop(key, None)
+    st.session_state.analysis_key = analysis_key
 if not sources:
     st.info("Upload one or more photos (JPG / PNG) - or tick the bundled sample in the sidebar.")
     st.stop()
@@ -109,8 +170,7 @@ if show_debug:
     with st.expander("🛠 Debug: files received (temporary)", expanded=True):
         st.write(f"`len(uploaded_files)` = **{len(uploaded_files or [])}** · bundled sample added = **{bool(use_sample)}** · "
                  f"photos that will be searched = **{len(sources)}**")
-        import hashlib
-        st.dataframe([dict(n=i + 1, filename=nm, bytes=len(d), sha1=hashlib.sha1(d).hexdigest()[:10])
+        st.dataframe([dict(n=i + 1, filename=nm, bytes=len(d))
                       for i, (nm, d) in enumerate(sources)])
 
 st.divider()
@@ -127,7 +187,7 @@ if reg and (go or st.session_state.get("last_batch_reg") == reg):
     engine = get_engine(backend)
     if engine.fallback_reason:
         st.warning(f"OCR engine in use: **{engine.name}**. {engine.fallback_reason}")
-    keyset = (tuple((n, len(d)) for n, d in sources), reg, backend, auto_rotate)
+    keyset = (upload_signature, reg, backend, auto_rotate)
     if st.session_state.get("batch_key") != keyset:
         bar = st.progress(0.0, text="Starting…")
         log = st.empty()
@@ -158,9 +218,6 @@ if reg and (go or st.session_state.get("last_batch_reg") == reg):
         st.dataframe([dict(photo=o.name, status=label[o.status], numbers_read=o.n_numbers_read,
                            matches=len(o.matches), seconds=o.seconds) for o in batch.outcomes])
         if show_debug:
-            msg = (f"[ExamSeat debug] uploaded={len(uploaded_files or [])} searched={len(batch.outcomes)} "
-                   + " | ".join(f"{o.name}:{o.status}{_how(o)}" for o in batch.outcomes))
-            print(msg, file=sys.stderr, flush=True)
             st.caption("🛠 " + " · ".join(f"{o.name}: {o.status.lower()} {_how(o)}" for o in batch.outcomes))
         if batch.found:
             names = ", ".join(f"**{o.name}**" for o in batch.found)

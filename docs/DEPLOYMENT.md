@@ -25,7 +25,7 @@ not installed on the free hosted instance to reduce build size and memory requir
 
 ## Resource and privacy behavior
 
-- Up to 5 images per search; 10 MB per image; 30 MB total; at most 20 megapixels per image.
+- No fixed image-count limit per search; 10 MB per image; 30 MB total; at most 20 megapixels per image. The combined-size and pixel limits protect the hosted instance from oversized batches.
 - Images and entered registration numbers are sent to the Streamlit host for processing.
   The application does not write uploads/results to a database or persistent files; image
   data and OCR results are kept in per-session memory while the session is active.

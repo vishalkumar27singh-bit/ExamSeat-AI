@@ -27,7 +27,7 @@ python diagnose_coordinates.py "<photo>" "<registration-number>" # PaddleOCR coo
 ```
 
 Photo-dependent tests and evaluation data are local-only and are not included in the public repository.
-The hosted app accepts up to five photos, 10 MB per photo, 30 MB total, and 20 megapixels per image.
+The hosted app accepts any number of photos per batch, subject to a 10 MB per-photo limit, 30 MB combined-size limit, and 20-megapixel per-image limit.
 
 ## Optional custom ML
 

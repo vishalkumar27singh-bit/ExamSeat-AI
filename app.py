@@ -24,7 +24,6 @@ from pipeline import all_numbers_table, render_crop, render_highlight, render_se
 APP_VERSION = "multi-image 2026-11-03"      # shown on the page: identifies this app build
 ROOT = os.path.dirname(os.path.abspath(__file__))
 SAMPLE = os.path.join(ROOT, "samples", "photo_001_clear.jpeg")
-MAX_PHOTOS = 5
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_BATCH_BYTES = 30 * 1024 * 1024
 MAX_IMAGE_PIXELS = 20_000_000
@@ -101,13 +100,9 @@ st.info("Privacy: uploaded photos and registration numbers are processed by this
 # ---- upload: ALL files are kept in a list; nothing below ever uses only the first one -----------------
 uploaded_files = st.file_uploader("Upload all seating chart photos", type=["jpg", "jpeg", "png"],
                                   accept_multiple_files=True, key="seat_photos",
-                                  help="Up to 5 photos; 10 MB per photo and 30 MB total. "
+                                  help="No photo-count limit; 10 MB per photo and 30 MB total. "
                                        "Images must be at most 20 megapixels.")
 uploaded_files = uploaded_files or []
-if len(uploaded_files) > MAX_PHOTOS:
-    clear_search_state()
-    st.error(f"Please upload no more than {MAX_PHOTOS} photos at a time.")
-    st.stop()
 if any(f.size > MAX_UPLOAD_BYTES for f in uploaded_files):
     clear_search_state()
     st.error("Each photo must be 10 MB or smaller.")

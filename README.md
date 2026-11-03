@@ -91,7 +91,7 @@ intentionally excluded from this public repository.
 
 * The page shows **App version: multi-image 2026-11-03**. If you do not see that line, you are running an old copy of `app.py` (another folder, or an old `streamlit run` still open): stop it with Ctrl+C and start it from this folder.
 * The uploader is `st.file_uploader("Upload all seating chart photos", ..., accept_multiple_files=True)`. Click **Browse files** and select several files at once (Cmd/Shift-click), or drag several in; you can also add files one after another.
-* Uploads are limited to 5 photos, 10 MB per photo, 30 MB total, and 20 megapixels per image to keep public-hosting resource use bounded.
+* There is no photo-count limit. Uploads are limited to 10 MB per photo, 30 MB total, and 20 megapixels per image to keep public-hosting resource use bounded.
 * Debug details are off by default. Use **Clear this session's photos and results** in the sidebar to discard temporary session data.
 * Room, column and row are shown **only when the seat is verified**; otherwise the app says "not verified".
 

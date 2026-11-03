@@ -1,0 +1,18 @@
+.DS_Store
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+
+# Local exam data and generated OCR/evaluation results
+/samples/
+/ground_truth/
+/outputs/
+/diagnostics/
+/ExamSeatAI_stage_by_stage.ipynb
+
+# These tests require the excluded real exam photos
+/tests/conftest.py
+/tests/test_coordinates.py
+/tests/test_multi_image.py
+/tests/e2e_streamlit_upload.py

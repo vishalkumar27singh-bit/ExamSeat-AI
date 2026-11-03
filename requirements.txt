@@ -1,0 +1,18 @@
+# ExamSeat AI - dependencies.
+# You ALREADY have most of these in your Anaconda environment - do NOT reinstall them.
+# Check first:  pip list | grep -i -E "opencv|pandas|pillow|paddle|streamlit|numpy|tabulate|pytest|ultralytics"
+numpy>=1.23
+opencv-python>=4.8        # already installed
+pandas>=1.5               # already installed
+Pillow>=9.0               # already installed
+paddlepaddle>=3.0         # already installed
+paddleocr>=3.0            # already installed (3.x API; 2.x also handled)
+streamlit>=1.37           # app.py
+tabulate>=0.9             # evaluation.py markdown report
+# optional fallback OCR (same PP-OCR model family, models are inside the wheel, works offline):
+rapidocr-onnxruntime>=1.2
+
+# ---- only for tests / custom ML (install when you need them) ----
+# pytest>=7                 # python -m pytest tests
+# playwright>=1.40          # python tests/e2e_streamlit_upload.py  (then: playwright install chromium)
+# ultralytics>=8.3          # ml/train_yolo.py (pulls in torch; large download)

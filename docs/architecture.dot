@@ -1,0 +1,29 @@
+digraph G {
+  rankdir=TB; fontname="Helvetica"; nodesep=0.35; ranksep=0.45;
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11, color="#444444"];
+  edge [fontname="Helvetica", fontsize=9, color="#555555"];
+
+  ui   [label="app.py  (Streamlit)\nmany photos + one registration number\nprogress per photo, summary, annotated images", fillcolor="#dbeafe"];
+  multi[label="multi_search.py\nloop over photos, ONE try/except per photo\nOCR cache, duplicate / conflict flags", fillcolor="#dbeafe"];
+
+  subgraph cluster_one { label="pipeline.py - one photo, processed independently"; style="rounded,dashed"; color="#888888"; fontname="Helvetica";
+    img  [label="image_processing.py\nEXIF load, size limit, rotate\nTransform (original <-> work coords)", fillcolor="#fef3c7"];
+    ocr  [label="ocr_engine.py   TEXT RECOGNITION\nPaddleOCR (RapidOCR fallback)\nDetection = text + its own polygon\nexact search, candidates", fillcolor="#dcfce7"];
+    loc  [label="seat_locator.py   SEAT MAPPING\nde-skew, ridge filter, Hough lines\n6-column chain, row lines, header row\nroom heading association", fillcolor="#fce7f3"];
+    ver  [label="verify_polygon\ncrop the box from the ORIGINAL photo\nre-read it: must equal the query", fillcolor="#fee2e2"];
+  }
+
+  det  [label="ml/  OBJECT DETECTION (optional)\nYOLO table / heading regions\nprepare_dataset, train_yolo, eval_detector\nnot wired in: no evidence yet it beats the grid code", fillcolor="#e5e7eb", style="rounded,filled,dashed"];
+
+  out  [label="MatchReport per photo\nroom, column, row, OCR score, confidence level,\nverified flag, warnings, polygon in ORIGINAL pixels", fillcolor="#dbeafe"];
+
+  ui -> multi [label="[(name, bytes)], query"];
+  multi -> img [label="each photo"];
+  img -> ocr [label="work image"];
+  ocr -> loc [label="detections"];
+  ocr -> ver [label="match polygon"];
+  loc -> out; ver -> out;
+  out -> multi [label="status FOUND / NOT_FOUND / ERROR"];
+  multi -> ui;
+  det -> loc [style=dashed, label="(future) table crops"];
+}
